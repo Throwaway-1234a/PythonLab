@@ -1,0 +1,26 @@
+[project]
+name = "findex"
+version = "0.1.0"
+description = "Full-text search engine built from scratch"
+readme = "README.md"
+authors = [
+    { name = "Your Name", email = "you@example.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+findex = "findex:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
