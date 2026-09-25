@@ -67,11 +67,17 @@ def save(
 def load(path: Path, fmt: Literal["pickle", "json"] = "pickle") -> InvertedIndex:
     if fmt == "pickle":
         with open(path, "rb") as f:
-            postings_dict, doc_lengths, doc_meta = _FindexUnpickler(f).load()
+            unpickled = _FindexUnpickler(f).load()
+            if len(unpickled) == 4:
+                postings_dict, doc_lengths, doc_meta, raw_docs = unpickled
+            else:
+                postings_dict, doc_lengths, doc_meta = unpickled
+                raw_docs = {}
             return InvertedIndex(
                 postings=defaultdict(list, postings_dict),
                 doc_lengths=doc_lengths,
                 doc_meta=doc_meta,
+                raw_docs=raw_docs,
             )
     elif fmt == "json":
         with open(path, "r", encoding="utf-8") as f:
