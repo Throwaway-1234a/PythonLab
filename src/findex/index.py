@@ -1,6 +1,5 @@
 import functools
 import heapq
-import pickle
 from collections import defaultdict
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -125,32 +124,16 @@ class Index(Mapping[str, list[Posting]]):
 
     @timed
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump(
-                (dict(self.postings), self.doc_lengths, self.doc_meta, self.raw_docs),
-                f,
-                protocol=5,
-            )
+        from findex.store import save as store_save
+
+        store_save(self, path)
 
     @classmethod
     @timed
     def load(cls, path: Path) -> "Index":
-        from findex.store import _FindexUnpickler
+        from findex.store import load as store_load
 
-        with open(path, "rb") as f:
-            unpickled = _FindexUnpickler(f).load()
-            if len(unpickled) == 4:
-                postings_dict, doc_lengths, doc_meta, raw_docs = unpickled
-            else:
-                postings_dict, doc_lengths, doc_meta = unpickled
-                raw_docs = {}
-            return cls(
-                postings=defaultdict(list, postings_dict),
-                doc_lengths=doc_lengths,
-                doc_meta=doc_meta,
-                raw_docs=raw_docs,
-            )
+        return store_load(path)
 
     def _evaluate_query_uncached(self, query_str: str) -> frozenset[int]:
         from findex.query import parse

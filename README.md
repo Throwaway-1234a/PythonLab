@@ -1,5 +1,7 @@
 # findex
 
+[![CI](https://github.com/Throwaway-1234a/PythonLab/actions/workflows/ci.yml/badge.svg)](https://github.com/Throwaway-1234a/PythonLab/actions/workflows/ci.yml)
+
 A full-text search engine built from scratch in modern Python.
 
 ## Lab 1 — Streams, Not Lists
@@ -162,3 +164,31 @@ Measured across 10 hand-labeled queries on the Gutenberg corpus:
 | 9 | `love heart beauty soul` | Sonnets, Songs Of Innocence | 0.00 | 0.00 |
 | 10 | `god lord prayer heaven` | Bible, Paradise Lost | 1.00 | 1.00 |
 | **Mean** | **MAP@5** | | **0.340** | **0.340** |
+
+## Lab 4 — Typing, Testing, Packaging, and CLI
+
+### Test Suite & Coverage
+
+The test suite contains 38 tests (including 3 property-based invariants via `Hypothesis` and CLI testing via `CliRunner`).
+
+* **Total Coverage:** **75%** (576 / 770 statements covered)
+
+#### Uncovered Code Analysis:
+* **Legacy module entrypoints (`stats.py` 0%, `__main__.py` 0%):** Standalone scripts from Lab 1 whose logic was migrated to the `findex stats` CLI subcommand.
+* **Defensive error branches (`store.py`, `corpus.py`):** Corrupted serialization format guards, invalid tuple lengths, and missing directory warnings that are not triggered during valid operational paths.
+* **CLI fallback branches (`cli.py`, `search.py`):** Terminal formatting edge cases and debug-level logging handlers (`-vv`).
+
+### Installing from Wheel
+
+Build the distribution package and install globally into an isolated environment via `uv tool`:
+
+```bash
+# 1. Build the wheel
+uv build
+
+# 2. Install the wheel on your PATH
+uv tool install dist/findex-0.4.0-py3-none-any.whl --force
+
+# 3. Verify executable
+findex --help
+```
