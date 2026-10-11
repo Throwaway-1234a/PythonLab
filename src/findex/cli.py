@@ -1,22 +1,17 @@
 import json
 import logging
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
 from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-)
 from rich.table import Table
 
-from findex.corpus import iter_documents
 from findex.index import Index
+from findex.parallel import build_index_parallel
 from findex.ranking import BM25, Scorer, TfIdf
 
 app = typer.Typer(
@@ -66,73 +61,42 @@ def index(
         bool,
         typer.Option("--positions", help="Record token positions for phrase matching"),
     ] = True,
+    workers: Annotated[
+        int, typer.Option("--workers", "-w", help="Number of concurrent workers")
+    ] = os.cpu_count() or 4,
+    executor: Annotated[
+        Literal["serial", "threads", "processes"],
+        typer.Option("--executor", "-e", help="Execution backend"),
+    ] = "processes",
     limit: Annotated[
         int | None,
         typer.Option("--limit", "-l", help="Limit indexing to first N documents"),
     ] = None,
 ) -> None:
+    """Build and persist an inverted index with configurable concurrency."""
     if not corpus.exists():
         err_console.print(
             f"[bold red]Error:[/bold red] Corpus directory '{corpus}' does not exist."
         )
         raise typer.Exit(code=1)
 
-    files = list(corpus.rglob("*.txt"))
-    if not files:
-        err_console.print(
-            f"[bold red]Error:[/bold red] No .txt files found in '{corpus}'."
+    t0 = time.perf_counter()
+    try:
+        idx, merge_time = build_index_parallel(
+            corpus_dir=corpus,
+            executor=executor,
+            workers=workers,
+            record_positions=positions,
         )
-        raise typer.Exit(code=1)
-
-    if limit is not None:
-        files = files[:limit]
-
-    idx = Index()
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        console=err_console,
-    ) as progress:
-        task = progress.add_task("Indexing documents...", total=len(files))
-
-        from findex.index import DocMeta, Posting
-        from findex.tokenize import tokenize
-
-        for doc in iter_documents(corpus):
-            if limit is not None and len(idx.doc_meta) >= limit:
-                break
-            doc_id = len(idx.doc_meta)
-            title = doc.doc_id.replace("-", " ").replace("_", " ").title()
-            idx.doc_meta[doc_id] = DocMeta(
-                doc_id=doc_id, title=title, path=str(doc.path)
-            )
-            idx.raw_docs[doc_id] = doc.text
-
-            term_positions: dict[str, list[int]] = {}
-            count = 0
-            for pos, tok in enumerate(tokenize(doc.text)):
-                term_positions.setdefault(tok, []).append(pos)
-                count += 1
-
-            idx.doc_lengths[doc_id] = count
-            for term, pos_list in term_positions.items():
-                if positions:
-                    idx.postings[term].append(
-                        Posting(
-                            doc_id=doc_id, tf=len(pos_list), positions=tuple(pos_list)
-                        )
-                    )
-                else:
-                    idx.postings[term].append(Posting(doc_id=doc_id, tf=len(pos_list)))
-
-            progress.advance(task)
+    except Exception as err:
+        err_console.print(f"[bold red]Worker failure:[/bold red] {err}")
+        raise
 
     idx.save(out)
+    elapsed = time.perf_counter() - t0
     err_console.print(
-        f"[green]✓[/green] Successfully indexed [bold]{idx.num_docs}[/bold] documents into [cyan]{out}[/cyan]."
+        f"[green]✓[/green] Indexed [bold]{idx.num_docs}[/bold] documents in [yellow]{elapsed:.3f} s[/yellow] "
+        f"([cyan]{executor}[/cyan], {workers} workers, merge: {merge_time:.3f} s)."
     )
 
 

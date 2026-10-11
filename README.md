@@ -192,3 +192,65 @@ uv tool install dist/findex-0.4.0-py3-none-any.whl --force
 # 3. Verify executable
 findex --help
 ```
+
+## Lab 5 — Concurrency and the GIL
+
+### Machine Specifications & Methodology
+* **OS / Kernel:** Arch Linux (Linux x86_64)
+* **CPU:** 4 logical cores
+* **Runtime:** Python 3.12.11 (CPython with GIL active)
+* **Dataset:** 1,000 documents (~13 MB uncompressed text)
+* **Methodology:** Each configuration executed across 3 runs; median wall time reported. Peak RSS captured via `resource.getrusage(RUSAGE_SELF)`.
+
+### Concurrency Benchmark
+
+| Executor | Workers | Wall (s, med) | CPU (s) | Peak RSS | Merge (s) | Speedup |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **serial** | 1 | 3.646 s | 3.62 s | 242.6 MB | 0.106 s | 1.00× |
+| **threads** | 2 | 3.977 s | 3.92 s | 261.8 MB | 0.083 s | 0.92× |
+| **threads** | 4 | 4.513 s | 4.31 s | 275.7 MB | 0.087 s | 0.81× |
+| **threads** | 8 | 5.308 s | 5.28 s | 287.1 MB | 0.078 s | 0.69× |
+| **processes** | 2 | 6.652 s | 3.18 s | 395.3 MB | 0.073 s | 0.55× |
+| **processes** | 4 | 5.399 s | 3.34 s | 395.3 MB | 0.078 s | 0.68× |
+| **processes** | 8 | 5.770 s | 3.79 s | 395.3 MB | 0.098 s | 0.63× |
+
+![Speedup vs. Workers](docs/speedup_plot.png)
+
+---
+
+### Analysis: Why Threads and Processes Behaved This Way
+
+#### 1. Why Threads Degraded Under the GIL
+Text tokenization and index construction are pure CPU-bound tasks executing in Python bytecode. Under CPython's Global Interpreter Lock (GIL), only one OS thread can execute Python bytecode at any given moment.
+
+Adding 2, 4, and 8 threads did not introduce true parallelism; instead, threads contended for the single GIL mutex across 4 logical cores. The periodic thread-switching check (`sys.getswitchinterval()`, default 5ms) forced CPU context switching and CPU L1/L2 cache invalidations, steadily degrading throughput from 3.646s down to 5.308s (0.69× speedup).
+
+#### 2. The Pickling Tax and Memory Overhead of Processes
+`ProcessPoolExecutor` bypassed the GIL by spawning isolated CPython child processes. While child worker CPU time dropped (down to 3.18s–3.34s across slices), the wall-clock time increased to 5.399s–6.652s.
+
+This slowdown is attributable to the **IPC pickling tax**:
+* Each worker builds a `PartialIndex` containing tens of thousands of postings list objects.
+* Passing these objects back to the parent process requires serializing them with `pickle`, transmitting them across inter-process Unix pipes/sockets, and deserializing them in the parent.
+* The parent process spent over 2 seconds of wall-clock time waiting on I/O pipes and deserializing partial indexes.
+* Furthermore, duplicating process address spaces increased peak resident memory from 242.6 MB up to 395.3 MB (+63%).
+
+On a 13 MB corpus where serial execution takes only 3.6 seconds, the communication overhead of IPC exceeds the total computational work.
+
+#### 3. Amdahl's Law and the Merge Phase
+In our architecture, document paths are chunked contiguously, allowing the reduce phase (`merge()`) to concatenate postings lists without sorting:
+$$T_{\text{merge}} \approx 0.073\text{s} - 0.106\text{s}$$
+The sequential fraction $1 - P \approx \frac{0.106}{3.646} \approx 2.9\%$.
+While the sequential merge phase is small enough to theoretically permit a ~4× speedup on 4 cores under Amdahl's Law, the IPC pickling tax shifted the actual bottleneck into inter-process data transfer.
+
+---
+
+### Counter-Benchmark: Pure I/O-Bound Work
+
+Measuring raw disk reads without CPU tokenization:
+
+| Execution Mode | Workers | Duration | Speedup |
+| :--- | :---: | :---: | :---: |
+| **Serial Read** | 1 | 0.007 s | 1.00× |
+| **Threaded Read** | 4 | 0.030 s | 0.24× |
+
+*Explanation:* Reading 1,000 small files took only 7 ms because the files were already resident in the Linux OS page cache. Spawning and joining a thread pool incurs ~23 ms of thread management overhead, demonstrating that thread pools only amortize on operations exceeding OS scheduling latency.
