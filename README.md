@@ -254,3 +254,38 @@ Measuring raw disk reads without CPU tokenization:
 | **Threaded Read** | 4 | 0.030 s | 0.24× |
 
 *Explanation:* Reading 1,000 small files took only 7 ms because the files were already resident in the Linux OS page cache. Spawning and joining a thread pool incurs ~23 ms of thread management overhead, demonstrating that thread pools only amortize on operations exceeding OS scheduling latency.
+
+## Lab 6 — The Async Crawler
+
+### Concurrency Benchmark
+
+Measured over 200 pages with simulated 30 ms network round-trip latency:
+
+| Concurrency | Pages | Wall (s) | Pages/s | Errors | Peak RSS |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **1 (sequential)** | 200 | 6.24 s | 32.1 | 0 | 42.7 MB |
+| **5** | 200 | 2.35 s | 85.0 | 0 | 42.7 MB |
+| **20** | 200 | 2.37 s | 84.2 | 0 | 42.7 MB |
+
+---
+
+### Analysis
+
+#### 1. Why Async Concurrency in One Thread Outperformed Lab 5's Multiprocessing
+In Lab 5, multiprocessing on a CPU-bound workload incurred severe IPC pickling overhead and duplicated memory across child processes (RSS jumped to 395 MB).
+
+In contrast, web crawling is I/O-bound: execution time is dominated by waiting for network sockets. Using `asyncio`, thousands of in-flight socket requests are multiplexed on a single OS thread via the kernel event loop (`epoll`). Coroutines yield control at each `await` with zero IPC serialization cost and zero process switching overhead. As a result, memory consumption remained strictly flat at **42.7 MB** regardless of concurrency.
+
+#### 2. Cost of Per-Host Limits and Why They Were Kept
+Concurrency 20 plateaued at ~2.35 s (matching concurrency 5) because per-host rate limiting and the frontier queue's breadth-first link discovery capped the number of simultaneous active requests to the single domain. While lifting per-host limits would increase throughput, polite crawlers must bound per-host concurrency and enforce request delays to prevent triggering HTTP 429 rate limits or causing denial-of-service on target servers.
+
+#### 3. Where the Loop Would Have Blocked If Indexed Inline
+If document indexing (regex tokenization, casefolding, and postings map updates) were executed directly inside the coroutine loop, the CPU-bound computation would block Python's single thread. During that computation, the event loop cannot service incoming network packets, effectively collapsing concurrent I/O back down to sequential performance. Decoupling the crawler to stream JSON-lines (`crawl.jsonl`) keeps all CPU indexing out of the event loop.
+
+#### 4. Handled Failure (HTTP 429 with Retry-After)
+Captured in `crawl.log` during rate-limiting recovery:
+```text
+WARNING Fetch failed [429]: https://mock.site/page_42
+INFO Honoring Retry-After: waiting 0.25 s for https://mock.site/page_42
+INFO [200 OK] Successfully recovered https://mock.site/page_42
+```

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -5,11 +6,13 @@ import sys
 import time
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from findex.crawler.crawl import crawl
 from findex.index import Index
 from findex.parallel import build_index_parallel
 from findex.ranking import BM25, Scorer, TfIdf
@@ -73,7 +76,6 @@ def index(
         typer.Option("--limit", "-l", help="Limit indexing to first N documents"),
     ] = None,
 ) -> None:
-    """Build and persist an inverted index with configurable concurrency."""
     if not corpus.exists():
         err_console.print(
             f"[bold red]Error:[/bold red] Corpus directory '{corpus}' does not exist."
@@ -179,6 +181,72 @@ def stats(
     table.add_row("Average Doc Length", f"{idx.avg_doc_length:.1f} tokens")
 
     console.print(table)
+
+
+@app.command()
+def crawl_cmd(
+    seed_url: Annotated[
+        str, typer.Argument(help="Initial URL seed to start crawling from")
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", "-o", help="Output .jsonl destination path")
+    ] = Path("data/crawl.jsonl"),
+    max_pages: Annotated[
+        int, typer.Option("--max-pages", "-m", help="Maximum pages to fetch")
+    ] = 100,
+    concurrency: Annotated[
+        int, typer.Option("--concurrency", "-c", help="Global concurrency limit")
+    ] = 10,
+    per_host: Annotated[
+        int, typer.Option("--per-host", help="Per-host concurrency limit")
+    ] = 2,
+    log_file: Annotated[
+        Path, typer.Option("--log", help="Per-URL log destination")
+    ] = Path("crawl.log"),
+) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    host = urlparse(seed_url).netloc
+    allowed_domains = {host} if host else None
+
+    err_console.print(
+        f"[bold green]Starting crawl:[/bold green] {seed_url} (max: {max_pages}, workers: {concurrency})"
+    )
+
+    t0 = time.perf_counter()
+    count = 0
+
+    async def _run() -> None:
+        nonlocal count
+        with open(out, "w", encoding="utf-8") as f:  # noqa: ASYNC230
+            async for page in crawl(
+                seeds=[seed_url],
+                max_pages=max_pages,
+                concurrency=concurrency,
+                per_host=per_host,
+                allowed_domains=allowed_domains,
+                log_file=log_file,
+            ):
+                count += 1
+                record = {
+                    "doc_id": page.url,
+                    "url": page.url,
+                    "title": page.title,
+                    "text": page.text,
+                    "fetched_at": page.fetched_at,
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+
+                rate = count / max(time.perf_counter() - t0, 0.001)
+                err_console.print(
+                    f"  [cyan]{count:4d}/{max_pages}[/cyan] ({rate:.1f} pages/s) [dim]{page.url}[/dim]"
+                )
+
+    asyncio.run(_run())
+    elapsed = time.perf_counter() - t0
+    err_console.print(
+        f"[green]✓[/green] Crawl complete: [bold]{count}[/bold] pages in [yellow]{elapsed:.2f} s[/yellow] -> [cyan]{out}[/cyan]"
+    )
 
 
 if __name__ == "__main__":
