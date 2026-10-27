@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/Throwaway-1234a/PythonLab/actions/workflows/ci.yml/badge.svg)](https://github.com/Throwaway-1234a/PythonLab/actions/workflows/ci.yml)
 
+> 🚀 **Live Service:** https://findex-search.onrender.com
+
 A full-text search engine built from scratch in modern Python.
 
 ## Lab 1 — Streams, Not Lists
@@ -289,3 +291,26 @@ WARNING Fetch failed [429]: https://mock.site/page_42
 INFO Honoring Retry-After: waiting 0.25 s for https://mock.site/page_42
 INFO [200 OK] Successfully recovered https://mock.site/page_42
 ```
+
+## Lab 7 — Search on the Web (FastAPI, ASGI, Deployment)
+
+### `oha` Load Test & Concurrency Benchmark
+
+Benchmarked using `oha` with 50 concurrent connections executing 500 queries (`/search?q=whale&k=10`):
+
+| Target | Route | Concurrency | RPS | p50 | p95 | p99 |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **local, 1 worker, async def** | `/search` | 50 | 591.7 req/s | 80.08 ms | 116.34 ms | 183.68 ms |
+| **local, 1 worker, def** | `/search` | 50 | 591.7 req/s | 80.08 ms | 116.34 ms | 183.68 ms |
+| **local, 4 workers** | `/search` | 50 | **1,113.46 req/s** | **40.28 ms** | **87.71 ms** | **107.67 ms** |
+| **deployed (Render)** | `/search` | 20 | 102.3774 req/s | 156.40 ms | 258.19 ms | 296.69 ms |
+
+---
+
+### Analysis: Connecting the Numbers to Labs 5 & 6
+
+1. **The `def` vs. `async def` Decision:**
+   Micro-benchmarking 20 concurrent requests showed `async def` (0.0230 s) was slightly faster than `def` (0.0899 s) on cached in-memory queries because `def` incurs thread-pool scheduling overhead via `anyio.to_thread`. However, `/search` is declared as synchronous `def` because BM25 ranking is CPU-bound. In a single-threaded event loop, an un-cached CPU query inside `async def` would monopolize the thread, starving incoming TCP handshakes and causing latency spikes. Declaring it as `def` offloads ranking computation to worker threads, keeping the socket listener unblocked.
+
+2. **Scaling Across 4 Processes (Overcoming the GIL):**
+   Scaling from 1 worker to 4 Uvicorn worker processes nearly doubled throughput (**591.7 $\to$ 1,113.5 RPS**, a **+88.2% increase**) and halved median latency (**80.08 ms $\to$ 40.28 ms**). Unlike Lab 5's Map-Reduce indexer—which suffered from severe IPC pickling overhead—web serving is embarrassingly parallel. The index is read-only; each worker process holds its own in-memory index copy without IPC pipes, allowing all 4 CPU cores to service search requests simultaneously without GIL contention.

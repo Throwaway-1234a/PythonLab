@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 import typer
+import uvicorn
 from rich.console import Console
 from rich.table import Table
 
@@ -247,6 +248,32 @@ def crawl_cmd(
     err_console.print(
         f"[green]✓[/green] Crawl complete: [bold]{count}[/bold] pages in [yellow]{elapsed:.2f} s[/yellow] -> [cyan]{out}[/cyan]"
     )
+
+
+@app.command()
+def serve(
+    host: Annotated[
+        str, typer.Option("--host", "-h", help="Bind network host")
+    ] = "0.0.0.0",
+    port: Annotated[int, typer.Option("--port", "-p", help="Bind network port")] = 8000,
+    workers: Annotated[
+        int, typer.Option("--workers", "-w", help="Number of uvicorn worker processes")
+    ] = 1,
+    index_path: Annotated[
+        Path, typer.Option("--index", "-i", help="Index file path")
+    ] = Path("index.bin"),
+) -> None:
+    import os
+
+    os.environ["FINDEX_INDEX_PATH"] = str(index_path)
+    os.environ["FINDEX_HOST"] = host
+    os.environ["FINDEX_PORT"] = str(port)
+    os.environ["FINDEX_WORKERS"] = str(workers)
+
+    err_console.print(
+        f"[bold green]Serving findex at http://{host}:{port}[/bold green] ({workers} workers)"
+    )
+    uvicorn.run("findex.web.app:app", host=host, port=port, workers=workers)
 
 
 if __name__ == "__main__":

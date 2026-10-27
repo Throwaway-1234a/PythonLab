@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>findex — Search Engine</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>findex</h1>
+        <form method="get" action="/">
+            <input type="search" name="q" class="search-input" placeholder="Search (e.g. 'whale ship', 'alice')..."
+                value="{{ query }}">
+        </form>
+        {% if query %}
+        <div class="meta-info">Found {{ total }} results in {{ elapsed_ms }} ms (Page {{ page }} of {{ total_pages }})
+        </div>
+        {% for r in results %}
+        <div class="card">
+            <a href="/doc/{{ r.doc_id }}" class="card-title">{{ r.title }}</a>
+            <div class="card-meta">Doc #{{ r.doc_id }} • Score: {{ r.score }}</div>
+            <div class="snippet">{{ r.snippet | safe }}</div>
+        </div>
+        {% else %}
+        <p>No documents matched your query.</p>
+        {% endfor %}
+        {% if total_pages > 1 %}
+        <div class="pagination">
+            {% if page > 1 %}
+            <a href="/?q={{ query }}&page={{ page - 1 }}" class="page-btn">Previous</a>
+            {% endif %}
+            <span class="page-btn active">{{ page }}</span>
+            {% if page < total_pages %} <a href="/?q={{ query }}&page={{ page + 1 }}" class="page-btn">Next</a>
+                {% endif %}
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+</body>
+
+</html>
