@@ -16,7 +16,8 @@ from rich.table import Table
 from findex.crawler.crawl import crawl
 from findex.index import Index
 from findex.parallel import build_index_parallel
-from findex.ranking import BM25, Scorer, TfIdf
+from findex.semantic import SemanticSearcher, build_embeddings, reciprocal_rank_fusion
+from findex.vectorized import VectorizedIndex
 
 app = typer.Typer(
     help="findex: full-text search engine CLI",
@@ -105,30 +106,50 @@ def index(
 
 @app.command()
 def search(
-    index_path: Annotated[Path, typer.Argument(help="Path to serialized index file")],
+    index_path: Annotated[Path, typer.Argument(help="Path to index file")],
     query: Annotated[str, typer.Argument(help="Search query expression")],
     k: Annotated[int, typer.Option("--k", help="Maximum results to return")] = 10,
     scorer_type: Annotated[
         Literal["bm25", "tfidf"], typer.Option("--scorer", help="Ranking scorer")
     ] = "bm25",
+    mode: Annotated[
+        Literal["keyword", "semantic", "hybrid"],
+        typer.Option("--mode", "-m", help="Search mode"),
+    ] = "keyword",
     as_json: Annotated[
-        bool, typer.Option("--json", help="Emit raw JSON lines to stdout for piping")
+        bool, typer.Option("--json", help="Emit raw JSON lines")
     ] = False,
 ) -> None:
     if not index_path.exists():
         err_console.print(
-            f"[bold red]Error:[/bold red] Index file '{index_path}' not found."
+            f"[bold red]Error:[/bold red] Index '{index_path}' not found."
         )
         raise typer.Exit(code=1)
 
-    try:
-        idx = Index.load(index_path)
-    except Exception as err:  # noqa: BLE001
-        err_console.print(f"[bold red]Error loading index:[/bold red] {err}")
-        raise typer.Exit(code=1)
+    idx = Index.load(index_path)
 
-    scorer: Scorer = BM25() if scorer_type == "bm25" else TfIdf()
-    results = idx.search(query, scorer=scorer, k=k)
+    if mode == "keyword":
+        vec_idx = VectorizedIndex.from_index(idx)
+        results = vec_idx.search_vectorized(query, scorer=scorer_type, k=k)
+    elif mode == "semantic":
+        npy_path = Path("data/embeddings/embeddings.npy")
+        meta_path = Path("data/embeddings/chunk_meta.json")
+        if not npy_path.exists():
+            err_console.print("[bold red]Error:[/bold red] Run 'findex embed' first.")
+            raise typer.Exit(code=1)
+        searcher = SemanticSearcher(npy_path, meta_path, idx)
+        results = searcher.search_semantic(query, top_k=k)
+    else:  # hybrid
+        npy_path = Path("data/embeddings/embeddings.npy")
+        meta_path = Path("data/embeddings/chunk_meta.json")
+        if not npy_path.exists():
+            err_console.print("[bold red]Error:[/bold red] Run 'findex embed' first.")
+            raise typer.Exit(code=1)
+        vec_idx = VectorizedIndex.from_index(idx)
+        kw_res = vec_idx.search_vectorized(query, scorer=scorer_type, k=k * 2)
+        searcher = SemanticSearcher(npy_path, meta_path, idx)
+        sem_res = searcher.search_semantic(query, top_k=k * 2)
+        results = reciprocal_rank_fusion(kw_res, sem_res, k=60, top_k=k)
 
     if as_json:
         for res in results:
@@ -141,12 +162,8 @@ def search(
             sys.stdout.write(json.dumps(payload) + "\n")
         return
 
-    if not results:
-        console.print(f"[yellow]No documents matched:[/yellow] '{query}'")
-        return
-
-    table = Table(title=f"Search Results: '{query}' (Scorer: {scorer_type.upper()})")
-    table.add_column("Rank", justify="right", style="cyan", no_wrap=True)
+    table = Table(title=f"Results for '{query}' (Mode: {mode.upper()})")
+    table.add_column("Rank", justify="right", style="cyan")
     table.add_column("Score", justify="right", style="magenta")
     table.add_column("Title", style="green")
     table.add_column("Snippet", style="white")
@@ -274,6 +291,31 @@ def serve(
         f"[bold green]Serving findex at http://{host}:{port}[/bold green] ({workers} workers)"
     )
     uvicorn.run("findex.web.app:app", host=host, port=port, workers=workers)
+
+
+@app.command()
+def embed(
+    index_path: Annotated[Path, typer.Argument(help="Path to serialized index")] = Path(
+        "index.bin"
+    ),
+    output_dir: Annotated[
+        Path, typer.Option("--out", "-o", help="Embeddings directory")
+    ] = Path("data/embeddings"),
+    model: Annotated[
+        str, typer.Option("--model", help="Embedding model name")
+    ] = "sentence-transformers/all-MiniLM-L6-v2",
+) -> None:
+    if not index_path.exists():
+        err_console.print(
+            f"[bold red]Error:[/bold red] Index '{index_path}' not found."
+        )
+        raise typer.Exit(code=1)
+
+    idx = Index.load(index_path)
+    npy_path, meta_path = build_embeddings(idx, output_dir, model_name=model)
+    err_console.print(
+        f"[green]✓[/green] Saved embeddings to [cyan]{npy_path}[/cyan] and [cyan]{meta_path}[/cyan]"
+    )
 
 
 if __name__ == "__main__":

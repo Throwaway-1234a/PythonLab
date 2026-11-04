@@ -185,3 +185,30 @@ class Index(Mapping[str, list[Posting]]):
 InvertedIndex = Index
 InvertedIndex.__module__ = "findex.index"
 Index.__module__ = "findex.index"
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build and persist an inverted index.")
+    parser.add_argument("corpus", type=Path, help="Directory containing text documents")
+    parser.add_argument(
+        "--out",
+        "-o",
+        type=Path,
+        default=Path("index.bin"),
+        help="Output index destination path",
+    )
+    parser.add_argument(
+        "--positions", action="store_true", help="Record token positions"
+    )
+    args = parser.parse_args()
+
+    print(f"Building index from {args.corpus}...")
+    idx = Index.build(args.corpus, record_positions=args.positions)
+    idx.save(args.out)
+    print(f"Successfully saved {idx.num_docs} documents to {args.out}")
+
+
+if __name__ == "__main__":
+    main()

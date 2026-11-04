@@ -9,7 +9,7 @@ COPY scripts/download_corpus.py ./scripts/download_corpus.py
 RUN uv pip install --no-cache --system .
 
 RUN python scripts/download_corpus.py && \
-    python -m findex.index data/corpus --out index.bin
+    findex index data/corpus --out /app/index.bin
 
 FROM python:3.12-slim-bookworm AS runtime
 
